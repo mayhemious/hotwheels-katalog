@@ -1,0 +1,127 @@
+# codemagic.yaml
+
+workflows:
+  ios-release-build: # Bu iş akışının adı, istediğiniz gibi değiştirebilirsiniz
+    name: iOS Release Build
+    instance_type: mac_mini_m1 # iOS derlemeleri için macOS M1 veya M2 makinesi seçin
+    max_build_duration: 60 # Maksimum derleme süresi (dakika cinsinden)
+    environment:
+      flutter: stable # Kullanılacak Flutter SDK kanalı (stable, beta, master vb.)
+      xcode: latest   # Kullanılacak Xcode versiyonu (veya spesifik bir versiyon örn: "15.0")
+      cocoapods: default # Kullanılacak Cocoapods versiyonu
+      vars:
+        # BURADAKİ DEĞİŞKENLERİ KENDİ BİLGİLERİNİZLE GÜNCELLEYİN
+        # VEYA CODEMAGIC UI'INDA ORTAM DEĞİŞKENİ OLARAK TANIMLAYIN
+        APP_STORE_CONNECT_ISSUER_ID: Encrypted(...) # App Store Connect API Anahtarı - Issuer ID (Codemagic'te şifreleyin)
+        APP_STORE_CONNECT_KEY_IDENTIFIER: Encrypted(...) # App Store Connect API Anahtarı - Key ID (Codemagic'te şifreleyin)
+        APP_STORE_CONNECT_PRIVATE_KEY: Encrypted(...) # App Store Connect API Anahtarı - Private Key (Codemagic'te şifreleyin)
+        CERTIFICATE_PRIVATE_KEY: Encrypted(...) # iOS Dağıtım Sertifikası (.p12) Şifresi (Codemagic'te şifreleyin)
+        BUNDLE_ID: "com.sirketadiniz.hotwheelscatalog" # Apple Developer Portal'daki App ID'niz
+
+    triggering:
+      events:
+        - push
+        # - tag # Sadece belirli etiketler push edildiğinde çalışsın
+        # - pull_request # Pull request açıldığında/güncellendiğinde çalışsın
+      branch_patterns:
+        - pattern: main # 'main' branch'ine push yapıldığında çalışsın
+          include: true
+        # - pattern: release-* # 'release-' ile başlayan branch'lere push yapıldığında çalışsın
+        #   include: true
+      # tag_patterns:
+      #   - pattern: v*.*.* # vX.Y.Z formatındaki etiketler için
+      #     include: true
+
+    scripts:
+      - name: Set up keychain
+        script: |
+          keychain initialize
+      - name: Fetch signing files
+        script: |
+          # Codemagic'te "Code signing identities" bölümünde ayarladığınız dağıtım sertifikasını ve sağlama profilini getirir
+          # Genellikle sertifika ve profil adları Codemagic tarafından otomatik olarak algılanır
+          # Veya spesifik olarak belirtebilirsiniz: keychain add-certificates --certificate <base64_encoded_cert> --certificate-password <password>
+          # app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create
+          # VEYA eğer manuel olarak yüklediyseniz:
+          keychain use-certificates
+      - name: Set up code signing settings on Xcode project
+        script: |
+          # Xcode projesinde kod imzalama ayarlarını yapar
+          # Bu komutlar, projenizdeki Xcode ayarlarını otomatik olarak günceller
+          xcode-project use-profiles
+          # Alternatif olarak, projenizin build settings'inde "Automatic manage signing" işaretli olmalı
+          # veya aşağıdaki komutlarla manuel olarak ayarlanabilir:
+          # xcode-project set-key "PRODUCT_BUNDLE_IDENTIFIER=$BUNDLE_ID"
+          # xcode-project set-key "PROVISIONING_PROFILE_SPECIFIER=Your_Provisioning_Profile_Name" # Profil adını belirtin
+          # xcode-project set-key "CODE_SIGN_IDENTITY=Apple Distribution: Your Team Name (TEAMID)" # Sertifika adını belirtin
+      - name: Get Flutter packages
+        script: |
+          flutter pub get
+      - name: Flutter analyze
+        script: |
+          flutter analyze
+      - name: Flutter unit tests # Eğer unit testleriniz varsa
+        script: |
+          # flutter test
+        ignore_failure: true # Testler başarısız olsa bile derlemeye devam et (isteğe bağlı)
+      - name: Build Flavor (Opsiyonel - Eğer flavor kullanıyorsanız)
+        script: |
+          # Eğer farklı ortamlar için (dev, prod vb.) flavor kullanıyorsanız, burada build_name ve build_number'ı ayarlayabilirsiniz.
+          # Örneğin:
+          # BUILD_NUMBER=$(($(app-store-connect get-latest-build-number "$APP_STORE_APP_ID") + 1))
+          # APP_VERSION=$(grep 'version:' pubspec.yaml | sed 's/version: //')
+          # flutter build ipa --release \
+          #   --export-options-plist=$CM_BUILD_DIR/export_options.plist \
+          #   --build-name="$APP_VERSION" \
+          #   --build-number="$BUILD_NUMBER" \
+          #   --flavor prod -t lib/main_prod.dart # Flavor'ınıza göre düzenleyin
+          echo "Flavor build adımı şimdilik atlanıyor."
+      - name: Build IPA
+        script: |
+          # pubspec.yaml dosyasındaki versiyonu al
+          APP_VERSION=$(grep 'version:' pubspec.yaml | sed 's/version: //')
+          # Eğer App Store Connect'e yüklüyorsanız build numarasını oradan alıp artırabilirsiniz
+          # Veya basit bir build numarası kullanabilirsiniz, örneğin Codemagic build numarası
+          BUILD_NUMBER=${CM_BUILD_NUMBER} # Codemagic tarafından sağlanan build numarası
+
+          flutter build ipa --release \
+            --export-options-plist=$CM_EXPORT_OPTIONS_PATH \ # Codemagic bunu otomatik sağlar
+            --build-name="$APP_VERSION" \
+            --build-number="$BUILD_NUMBER"
+            # --obfuscate --split-debug-info=./debug_info # Kod gizleme (isteğe bağlı)
+
+    artifacts:
+      - build/ios/ipa/*.ipa # Oluşturulan IPA dosyasını Codemagic'te "Artifacts" bölümüne kaydeder
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.dSYM # dSYM dosyalarını da kaydet (crash raporları için önemli)
+
+    publishing:
+      # App Store Connect'e otomatik yükleme (isteğe bağlı)
+      # Bunun için App Store Connect API anahtarı (Issuer ID, Key ID, Private Key) gerekir
+      # ve Codemagic'te ortam değişkenleri olarak veya "App Store Connect" entegrasyonu ile ayarlanmalıdır.
+      app_store_connect:
+        api_key: $APP_STORE_CONNECT_PRIVATE_KEY      # Ortam değişkeninden al
+        key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER    # Ortam değişkeninden al
+        issuer_id: $APP_STORE_CONNECT_ISSUER_ID      # Ortam değişkeninden al
+        # submission:
+        #   submit_to_testflight: true # TestFlight'a otomatik yükle
+        #   beta_groups: # Hangi TestFlight gruplarına gönderileceği (opsiyonel)
+        #     - "Internal Testers"
+        #     - "External Testers Group A"
+        #   submit_for_review: false # Otomatik olarak App Store incelemesine gönderme
+
+      # E-posta ile bildirim (isteğe bağlı)
+      # email:
+      #   recipients:
+      #     - kullanici@example.com
+      #   notify:
+      #     success: true # Başarılı derlemelerde bildir
+      #     failure: true # Başarısız derlemelerde bildir
+
+      # Slack bildirimi (isteğe bağlı)
+      # slack:
+      #   channel: "#builds"
+      #   webhook_url: Encrypted(...) # Slack webhook URL'niz (Codemagic'te şifreleyin)
+      #   notify_on_build_start: true
+      #   notify:
+      #     success: true
+      #     failure: true
